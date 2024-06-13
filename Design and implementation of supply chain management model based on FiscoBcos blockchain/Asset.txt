@@ -1,0 +1,52 @@
+pragma solidity ^0.4.25;
+
+contract Asset {
+    address public issuer;
+    mapping (address => uint) public balances;
+    mapping (address => mapping (address => uint)) public allowances; // 用户授权信息
+
+    event Sent(address from, address to, uint amount);
+    event Approval(address owner, address spender, uint amount);
+
+    constructor() public {
+        issuer = msg.sender;
+    }
+
+    // 发行资产
+    function issue(address receiver, uint amount) public {
+        require(msg.sender == issuer, "Only issuer can issue assets");
+        balances[receiver] += amount;
+    }
+
+    // 发送资产
+    function send(address receiver, uint amount) public {
+        require(balances[msg.sender] >= amount, "Insufficient balance");
+        balances[msg.sender] -= amount;
+        balances[receiver] += amount;
+        emit Sent(msg.sender, receiver, amount);
+    }
+
+    // 授权合约进行转账
+    function approve(address spender, uint amount) public returns (bool) {
+        allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    // 获取授权额度
+    function allowance(address owner, address spender) public view returns (uint) {
+        return allowances[owner][spender];
+    }
+
+    // 转账
+    function transferFrom(address sender, address receiver, uint amount) public returns (bool) {
+        require(balances[sender] >= amount, "Insufficient balance");
+        require(allowances[sender][msg.sender] >= amount, "Not enough allowance");
+        
+        balances[sender] -= amount;
+        balances[receiver] += amount;
+        allowances[sender][msg.sender] -= amount;
+        emit Sent(sender, receiver, amount);
+        return true;
+    }
+}

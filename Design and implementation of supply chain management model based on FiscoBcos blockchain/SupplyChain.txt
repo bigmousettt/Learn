@@ -1,0 +1,197 @@
+pragma solidity ^0.4.25;
+
+import "./Asset.sol";  // 导入资产合约
+
+contract SupplyChain {
+    enum Role { Unregistered, Buyer, Seller, Carrier }
+    enum ContractStatus { Unknown, Created, Signed, Produced, Inspected, Transporting, Received, CheckOK, Changing, Completed }
+
+    struct User {
+        Role role;
+    }
+
+    struct Contract {
+        uint id;
+        address buyer;
+        address seller;
+        address carrier; // 添加运输方地址成员
+        uint amount;
+        bool buyerSigned;
+        bool sellerSigned;
+        bool isPaid;
+        string logisticsInfo;
+        ContractStatus status;
+        string resolution;
+    }
+
+    Asset public assetContract;
+    address public arbitrator; // 第三方，用于解决纠纷
+    mapping(address => User) public users;
+    mapping(uint => Contract) public contracts;
+
+    constructor(address _assetContractAddress) public {
+        assetContract = Asset(_assetContractAddress);
+        arbitrator = msg.sender; // 合约创建者作为第三方
+    }
+
+    modifier onlyArbitrator() {
+        require(msg.sender == arbitrator, "Only the arbitrator can perform this action");
+        _;
+    }
+
+    function registerUser(string _role) public {
+        require(users[msg.sender].role == Role.Unregistered, "User already registered");
+        if (keccak256(abi.encodePacked(_role)) == keccak256(abi.encodePacked("Buyer"))) {
+            users[msg.sender].role = Role.Buyer;
+        } else if (keccak256(abi.encodePacked(_role)) == keccak256(abi.encodePacked("Seller"))) {
+            users[msg.sender].role = Role.Seller;
+        } else if (keccak256(abi.encodePacked(_role)) == keccak256(abi.encodePacked("Carrier"))) {
+            users[msg.sender].role = Role.Carrier;
+        } else {
+            revert("Invalid role");
+        }
+    }
+
+    function getUserRole(address _user) public view returns (string) {
+        if (users[_user].role == Role.Buyer) {
+            return "Buyer";
+        } else if (users[_user].role == Role.Seller) {
+            return "Seller";
+        } else if (users[_user].role == Role.Carrier) {
+            return "Carrier";
+        } else {
+            return "Unregistered";
+        }
+    }
+
+    function addContract(uint _id, address _buyer, address _seller, address _carrier, uint _amount) public {
+        require(users[_buyer].role == Role.Buyer, "Buyer not registered");
+        require(users[_seller].role == Role.Seller, "Seller not registered");
+        require(users[_carrier].role == Role.Carrier, "Carrier not registered");
+        contracts[_id] = Contract(_id, _buyer, _seller, _carrier, _amount, false, false, false, "", ContractStatus.Created, "");
+    }
+
+    function getContractStatus(uint _id) public view returns (string) {
+        if (_id == 0 || contracts[_id].status == ContractStatus.Unknown) {
+            return "Unknown";
+        } else if (contracts[_id].status == ContractStatus.Created) {
+            return "Created";
+        } else if (contracts[_id].status == ContractStatus.Signed) {
+            return "Signed";
+        } else if (contracts[_id].status == ContractStatus.Produced) {
+            return "Produced";
+        } else if (contracts[_id].status == ContractStatus.Inspected) {
+            return "Inspected";
+        } else if (contracts[_id].status == ContractStatus.Transporting) {
+            return "Transporting";
+        } else if (contracts[_id].status == ContractStatus.Received) {
+            return "Received";
+        } else if (contracts[_id].status == ContractStatus.CheckOK) {
+            return "CheckOK";
+        } else if (contracts[_id].status == ContractStatus.Changing) {
+            return "Changing";
+        } else if (contracts[_id].status == ContractStatus.Completed) {
+            return "Completed";
+        } else {
+            return "Unknown";
+        }
+    }
+
+    function signContract(uint _id) public {
+        require(users[msg.sender].role == Role.Buyer || users[msg.sender].role == Role.Seller, "Only buyer or seller can sign the contract");
+        if (users[msg.sender].role == Role.Buyer) {
+            require(!contracts[_id].buyerSigned, "Buyer already signed the contract");
+            contracts[_id].buyerSigned = true;
+        } else {
+            require(!contracts[_id].sellerSigned, "Seller already signed the contract");
+            contracts[_id].sellerSigned = true;
+        }
+        if (contracts[_id].buyerSigned && contracts[_id].sellerSigned) {
+            contracts[_id].status = ContractStatus.Signed;
+        }
+    }
+
+    function payContract(uint _id) public {
+        require(msg.sender == contracts[_id].buyer, "Only buyer can pay the contract");
+        require(contracts[_id].status == ContractStatus.CheckOK, "Contract must be checked OK");
+        require(!contracts[_id].isPaid, "Contract already paid");
+        require(assetContract.balances(msg.sender) >= contracts[_id].amount, "Insufficient balance");
+        // Transfer funds from buyer to contract
+        require(assetContract.transferFrom(msg.sender, address(this), contracts[_id].amount), "Failed to transfer funds to contract");
+        // Transfer funds from contract to seller
+        assetContract.send(contracts[_id].seller, contracts[_id].amount);
+        contracts[_id].isPaid = true;
+        contracts[_id].status = ContractStatus.Completed;
+    }
+    
+    function updateLogisticsStatus(uint _id, string _logisticsInfo) public {
+    require(msg.sender == contracts[_id].carrier, "Only carrier can update logistics status");
+    require(users[msg.sender].role == Role.Carrier, "Only carrier can update logistics status");
+    contracts[_id].logisticsInfo = _logisticsInfo;
+    contracts[_id].status = ContractStatus.Transporting;
+    }
+    
+    function updateProductionInfo(uint _id, string _productionInfo) public {
+        require(contracts[_id].status == ContractStatus.Signed, "Contract must be signed");
+        contracts[_id].status = ContractStatus.Produced;
+    }
+    
+    function updateInspectionInfo(uint _id, string _inspectionInfo) public {
+        require(contracts[_id].status == ContractStatus.Produced, "Goods must be produced");
+        contracts[_id].status = ContractStatus.Inspected;
+    }
+    
+
+    function markGoodsReceived(uint _id) public {
+        require(msg.sender == contracts[_id].buyer, "Only buyer can mark goods as received");
+        require(contracts[_id].status == ContractStatus.Transporting, "Goods must be in transit to be marked as received");
+    
+        contracts[_id].status = ContractStatus.Received;
+    }
+    
+    function buyerInspect(uint _id, string _inspectionResult) public {
+        require(msg.sender == contracts[_id].buyer, "Only buyer can inspect the goods");
+        require(contracts[_id].status == ContractStatus.Received, "Goods must be received before inspection");
+        if (keccak256(abi.encodePacked(_inspectionResult)) == keccak256(abi.encodePacked("ok"))) {
+            contracts[_id].status = ContractStatus.CheckOK;
+        } else if (keccak256(abi.encodePacked(_inspectionResult)) == keccak256(abi.encodePacked("fail"))) {
+            contracts[_id].status = ContractStatus.Changing;
+        } else {
+            revert("Invalid inspection result. Please provide 'ok' or 'fail'.");
+        }
+    }
+    
+    function requestCompensation(uint _id, uint _compensation) public {
+        require(msg.sender == contracts[_id].buyer, "Only buyer can request compensation");
+        require(contracts[_id].status == ContractStatus.Produced || contracts[_id].status == ContractStatus.Inspected || contracts[_id].status == ContractStatus.Transporting || contracts[_id].status == ContractStatus.Changing, "Delay compensation can only be requested during production, inspection, changing, or transporting stages");
+    
+        require(_compensation <= contracts[_id].amount, "Compensation amount exceeds contract amount");
+        contracts[_id].amount -= _compensation; // 减少合同金额
+    }
+    
+    function confirmCompensationRequest(uint _id, string _confirmation) public {
+        require(msg.sender == contracts[_id].seller, "Only seller can confirm compensation request");
+        require(contracts[_id].status == ContractStatus.Changing, "Contract must be in changing status");
+        require(keccak256(abi.encodePacked(_confirmation)) == keccak256(abi.encodePacked("ok")), "Confirmation must be 'ok'");
+    
+        contracts[_id].status = ContractStatus.CheckOK; // 更新合同状态为已确认
+    }
+    
+    function appealCompensationRequest(uint _id) public {
+        require(msg.sender == contracts[_id].buyer, "Only buyer can appeal compensation request");
+        require(contracts[_id].status == ContractStatus.Changing, "Contract must be in changing status");
+        
+        // Call the arbitrator to settle the dispute
+        arbitrator.call(abi.encodeWithSignature("settleDispute(uint)", _id));
+    }
+    
+    event LogisticsStatusUpdated(uint indexed contractId, string logisticsInfo);
+    event ProductionInfoUpdated(uint indexed contractId, string productionInfo);
+    event InspectionInfoUpdated(uint indexed contractId, string inspectionInfo);
+    event TransportInfoUpdated(uint indexed contractId, string transportInfo);
+    event GoodsReceived(uint indexed contractId);
+    event BuyerInspectionResult(uint indexed contractId, string result);
+    event DelayCompensationRequested(uint indexed contractId, uint compensationAmount);
+    event DisputeSettled(uint indexed contractId, string resolution);
+
+}
